@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pre-requisites checks
-for c in jq aws awk ps stat; do
-  command -v $c >/dev/null || { echo "$c is required."; exit 1; }
+for prog in jq aws awk ps stat; do
+  command -v $prog >/dev/null || { echo "$prog is required."; exit 1; }
 done
 [[ $BASH_VERSINFO > 2 ]] || { echo "need bash>3."; exit 1; }
 
@@ -66,8 +66,8 @@ done
 
 # Validate input
 if [[ $md5 == 1 ]];then
-  for c in openssl base64 ; do
-    command -v $c >/dev/null || { echo "$c is required."; exit 1; }
+  for prog in openssl base64 ; do
+    command -v $prog >/dev/null || { echo "$prog is required."; exit 1; }
   done
 fi
 [[ -f $f && -r $f ]] || { echo "File \"$f\" doesn't exist or not readable."; exit 1; }
