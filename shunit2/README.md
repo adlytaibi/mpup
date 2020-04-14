@@ -4,7 +4,7 @@
 
 * Test a single unit
 ```bash
-./unitTest -- testSB666
+./unitTest -- testMD5
 ```
 
 * Test all units

@@ -67,7 +67,6 @@ Usage
      [[-a|--awscliopts]=OPTIONS] [[-b|--bucket]=NAME] [[-f|--file]=FILE] [[-s|--size]=SIZE]
      [[-g|--governor]=VALUE] [-m|--md5] [-et|--elapsedtime]
    
-   
    DESCRIPTION
      -a=OPTIONS, --awscliopts="OPTIONS"  (default: "--endpoint-url https://s3.demo.netapp.com:8082 --ca chain.pem")
        Refer to aws help pages. Do not add aws at the beginning of the options, it's already taken care of.
