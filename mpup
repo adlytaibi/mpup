@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Pre-requisites checks
+for c in jq aws awk ps stat; do
+  command -v $c >/dev/null || { echo "$c is required."; exit 1; }
+done
+[[ $BASH_VERSINFO > 2 ]] || { echo "need bash>3."; exit 1; }
+
+# Full help page
+function usage() {
+  echo -e "\033[1mUSAGE\033[0m\n\tMultipart upload to S3\n\n\033[1mSYNOPSIS\033[0m"
+  shortusage
+  echo -e "\n\033[1mDESCRIPTION\033[0m"
+  echo -e "\t\033[1m-a=\033[0m"OPTIONS", \033[1m--awscliopts=\033[0m\"OPTIONS\"\t(\033[1mdefault:\033[0m \"--endpoint-url https://s3.demo.netapp.com:8082 --ca chain.pem\")"
+  echo -e "\t\tRefer to aws help pages. Do not add aws at the beginning of the options, it's already taken care of."
+  echo -e "\n\t\033[1m-b=\033[0mNAME, \033[1m--bucket=\033[0mNAME"
+  echo -e "\t\tProvide a bucket name for existing or to be created."
+  echo -e "\n\t\033[1m-f=\033[0mFILE, \033[1m--file=\033[0mFILE"
+  echo -e "\t\tThe file to be uploaded in multipart."
+  echo -e "\n\t\033[1m-s=\033[0mSIZE, \033[1m--size=\033[0mSIZE\t(\033[1mdefault:\033[0m 100m) "
+  echo -e "\t\tThe size of the parts in the format of integer and unit in \033[1mm\033[0m, \033[1mM\033[0m for Megabytes or \033[1mg\033[0m, \033[1mG\033[0m for Gigabytes."
+  echo -e "\n\t\033[1m-g\033[0m=VALUE, \033[1m--governor\033[0m=VALUE\t(\033[1mdefault:\033[0m 20)"
+  echo -e "\t\tThrottle the number of parallel PUT or DELETE operations. Set to 0 for unlimited.\n\t\tSet this a value you're comfortable with depending how powerful your machine is."
+  echo -e "\n\t\033[1m-m\033[0m, \033[1m--md5\033[0m\t(\033[1mdefault:\033[0m Disabled)"
+  echo -e "\t\tUse md5 for uploading parts."
+  echo -e "\n\t\033[1m-et\033[0m, \033[1m--elapsedtime\033[0m"
+  echo -e "\t\tThis option will show the elapsed time for operations in format of HH:MM:SS (don't do days)."
+  echo -e "\n\033[1mAUTHOR\033[0m"
+  echo -e "\tWritten by Adly Taibi."
+  echo -e "\n\033[1mCOPYRIGHT\033[0m"
+  echo -e "\tLicense GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>."
+  echo -e "\tThis is free software: you are free to change and redistribute it.  There is NO WARRANTY, to the extent permitted by law."
+  exit 1
+}
+
+# Mini help message
+function shortusage() {
+  echo -e "\t\033[1m$(basename $0)\033[0m [\033[1m-h\033[0m|\033[1m--help\033[0m]\n\t[[\033[1m-a\033[0m|\033[1m--awscliopts\033[0m]="OPTIONS"] [[\033[1m-b\033[0m|\033[1m--bucket\033[0m]=NAME] [[\033[1m-f\033[0m|\033[1m--file\033[0m]=FILE] [[\033[1m-s\033[0m|\033[1m--size\033[0m]=SIZE]\n\t[[\033[1m-g\033[0m|\033[1m--governor\033[0m]=VALUE] [\033[1m-m\033[0m|\033[1m--md5\033[0m] [\033[1m-et\033[0m|\033[1m--elapsedtime\033[0m]\n"
+}
+
+# Initial settings
+md5=2
+
+# Read arguments if any
+while [[ ! -z $1 ]]
+do
+  case $1 in
+    -a=*|--awscliopts=*) a=${1#*=} ;;
+    -b=*|--bucket=*) b=${1#*=} ;;
+    -f=*|--file=*) f=${1#*=} ;;
+    -s=*|--size=*) s=${1#*=} ;;
+    -g=*|--governor=*) governor=${1#*=} ;;
+    -m|--md5) md5=1 ;;
+    -et|--elapsedtime) elapsedtime=1 ;;
+    -h|--help) usage ;;
+    *) echo "\"${1%=*}\" is an invalid options"; shortusage; exit 1 ;;
+  esac
+  shift
+done
+
+# Default settings
+[[ -z $a ]] && a='--endpoint-url https://s3.demo.netapp.com:8082 --ca chain.pem'
+[[ -z $b ]] && { echo "Need to specify bucket."; shortusage; exit 1; }
+[[ -z $f ]] && { echo "Need to provide a file."; shortusage; exit 1; }
+[[ -z $s ]] && s=100m
+[[ -z $governor ]] && governor=20
+
+# Validate input
+if [[ $md5 == 1 ]];then
+  for c in openssl base64 ; do
+    command -v $c >/dev/null || { echo "$c is required."; exit 1; }
+  done
+fi
+[[ -f $f && -r $f ]] || { echo "File \"$f\" doesn't exist or not readable."; exit 1; }
+function scount {
+  if [[ $unit == [mM] ]]; then m=1024; fi
+  if [[ $unit == [gG] ]]; then m=1024*1024; fi
+  s=$((num*m))
+}
+[[ ${s} =~ ^[0-9]+[mMgG]$ ]] && { num=${s%*[mMgG]}; unit=${s:${#num}:1}; } || { echo "Wrong unit or value."; exit 1; }
+scount
+[[ $s -ge 5120 && $s -le 5242880 ]] || { echo "Wrong input \"${s}KB\" for part size. Needs to be between 5MB and 5GB."; exit 1; }
+[[ $governor =~ ^[0-9]+$ ]] || { echo "Wrong input \"$governor\" for governor."; exit 1; }
+[[ $OSTYPE == "linux-gnu" ]] && fmt="-c%s" || fmt="-f%z"
+fsize=$(stat $fmt "$f")
+nparts=$((($fsize/1024)/$s))
+[[ $nparts -ge 2 && $nparts -le 10000 ]] || { echo "Need two or more parts and no more than 10000."; exit 1; }
+
+# Various vars
+a="aws $a"
+mypid=$$
+width=77
+
+# Print and/or log
+ts=$(date +%Y%m%d%H%M)
+function printlog(){
+  echo -e "$@"
+  [[ $log == 1 && $showonly == 0 ]] && sed 's/\\[03e]*\[[0-9;]*m//g;s/\\//'<<<"$@">>$logdir/${b}_$ts
+}
+
+# Pretty titles function
+function title(){
+  side=$(((width-2-${#1}-${#2})/2))
+  prepad=$(printf '.%.0s' $(eval echo {1..$side}))
+  pad=$(printf '#%.0s' $(eval echo {1..$side}))
+  postpad=$(printf '+%.0s' $(eval echo {1..$side}))
+  case $1 in
+    PRE) p=$prepad; prepos=1;;
+    POST) p=$postpad; prepos=1;;
+    *) p=$pad; prepos=0;;
+  esac
+  scount=$((width-${#1}-${#2}-2*${#p}-$prepos))
+  correc=$(printf ' %.0s' $(eval echo {1..$scount}))
+  printlog "\033[01;32m$p  $@$correc$p\033[0m"
+}
+
+# Throttle function
+function throttle(){
+  [[ $governor == 0 ]] && return
+  nproc=$(awk '$1==p {c++} END{print c}' p=$mypid< <(ps -eoppid))
+  if [[ $nproc -gt $governor ]]; then
+    printlog "\033[1;33mthrottling ($governor)...\033[0m"
+    wait
+  fi
+}
+
+# Elapsed time
+function etime(){
+  dt=$(($2-$1))
+  hours=$(printf "%02d" $(($dt/3600)))
+  minutes=$(printf "%02d" $(($dt%3600/60)))
+  secs=$(printf "%02d" $(($dt%60)))
+  printlog "Elapsed time: \033[1;33m${hours}:${minutes}:${secs}\033[0m"
+}
+
+# Check for the bucket
+title "Check for bucket \"$b\""
+t1=$(date +%s)
+bhead=$($a s3api head-bucket --bucket $b 2>&1)
+rcode=$?
+scode=$(sed -n 's/[^0-9]*\([0-9]\{3\}\).*/\1/p'<<<$bhead)
+case $scode in
+  404)
+    echo "Bucket named \"$b\" doesn't exist."
+    exit 1
+    ;;
+  403)
+    echo "Bucket named \"$b\" is unavailable or verify your credentials."
+    exit 1
+    ;;
+  *)
+    [[ $rcode == 0 ]] || { echo "Maybe a problem with endpoint URL."; exit 1;}
+    ;;
+esac
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+
+tdir=$(mktemp -d); fmd5=(); cmd5=(); etag=();
+
+# Split files
+title "Split into $nparts or more parts"
+t1=$(date +%s)
+keyfile=$(basename $f)
+split -b ${s}k $f $tdir/$keyfile.
+for i in $(ls $tdir/$keyfile.*);do
+  fmd5+=($(basename $i))
+done
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+
+# md5
+if [[ $md5 == 1 ]];then
+  title "Calculating md5 checksums"
+  t1=$(date +%s)
+  for i in ${!fmd5[@]}; do
+    compmd5=$(openssl md5 -binary $tdir/${fmd5[$i]}|base64)
+    cmd5+=($compmd5)
+    echo ${fmd5[$i]} $compmd5
+  done
+  [[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+fi
+
+# Create upload
+title "Creating upload"
+t1=$(date +%s)
+cu=$($a s3api create-multipart-upload --bucket $b --key $keyfile)
+upid=$(jq -r '.UploadId'<<<$cu)
+echo UploadID $upid
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+
+# Upload parts
+function log() { echo $1; echo $1 > $2; }
+title "Uploading parts"
+t1=$(date +%s)
+partnum=1
+for i in ${!fmd5[@]}; do
+  contentmd5=$([[ $md5 == 1 ]] && echo --content-md5 ${cmd5[$i]} || echo "")
+  log "$($a s3api upload-part --bucket $b --key $keyfile --part-number $partnum --upload-id $upid $contentmd5 --body $tdir/${fmd5[$i]})" $tdir/${fmd5[$i]}.json &
+  ((partnum=partnum+1))
+  throttle
+done
+wait
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+
+# Build the parts json file
+title "Building parts json file"
+t1=$(date +%s)
+partnum=1
+echo '{"Parts":['>$tdir/fpart.json
+for i in ${!fmd5[@]}; do
+  etag=$(jq -r '.ETag' $tdir/${fmd5[$i]}.json)
+  echo $comma'{"ETag":'${etag}',"PartNumber":'$partnum'}' >>$tdir/fpart.json
+  ((partnum=partnum+1))
+  comma=','
+done
+echo ']}'>>$tdir/fpart.json
+jq '.' $tdir/fpart.json
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+
+# Complete multipart upload
+title "Complete the multipart upload"
+t1=$(date +%s)
+res=$($a s3api complete-multipart-upload --multipart-upload file://$tdir/fpart.json --bucket $b --upload-id $upid --key $keyfile)
+jq '.'<<<$res
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+
+# Check uploaded file
+title "Check the uploaded file"
+t1=$(date +%s)
+res=$($a s3api head-object --bucket $b --key $keyfile)
+jq '.'<<<$res
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+
+# Remove temporary files
+title "Cleaning up temporary files"
+t1=$(date +%s)
+rm -r $tdir
+[[ $? == 0 ]] || { printlog "Unable to clean up the temporary directory."; }
+[[ $elapsedtime == 1 ]] && etime $t1 $(date +%s)
+

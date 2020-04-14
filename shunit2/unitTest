@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+
+mktemp() { echo $tmpdir; }
+base64() { echo "m0mq1u0KEibzWhhDt7ztCcQo="; }
+setUp() {
+  . placebo
+  pill_attach command=aws data_path=mock
+  pill_playback
+  tmpdir=$(/usr/bin/env mktemp -d)
+  dd if=/dev/urandom of=$tmpdir/LargeFile.pdf bs=1024 count=11000 2>/dev/null
+}
+
+tearDown() {
+  [[ $(type -t pill_detach) == 'function' ]] && pill_detach
+  rm -f actual_log
+  rm -f expected_log
+}
+
+testMD5() {
+  . ../mpup -a='--endpoint-url https://webscaledemo.netapp.com' -b=bversion -s=5m -m -f=$tmpdir/LargeFile.pdf -et
+
+  cat > expected_log <<EOF
+aws --endpoint-url https://webscaledemo.netapp.com s3api head-bucket --bucket bversion
+aws --endpoint-url https://webscaledemo.netapp.com s3api create-multipart-upload --bucket bversion --key LargeFile.pdf
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 1 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --content-md5 m0mq1u0KEibzWhhDt7ztCcQo= --body $tmpdir/LargeFile.pdf.aa
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 2 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --content-md5 m0mq1u0KEibzWhhDt7ztCcQo= --body $tmpdir/LargeFile.pdf.ab
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 3 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --content-md5 m0mq1u0KEibzWhhDt7ztCcQo= --body $tmpdir/LargeFile.pdf.ac
+aws --endpoint-url https://webscaledemo.netapp.com s3api complete-multipart-upload --multipart-upload file://$tmpdir/fpart.json --bucket bversion --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --key LargeFile.pdf
+aws --endpoint-url https://webscaledemo.netapp.com s3api head-object --bucket bversion --key LargeFile.pdf
+EOF
+  pill_log > actual_log
+  assertEquals "unexpected sequence of commands issued" \
+    "" "$(diff -wu expected_log actual_log)"
+}
+
+testMD5g2() {
+  . ../mpup -a='--endpoint-url https://webscaledemo.netapp.com' -b=bversion -s=5m -m -g=2 -f=$tmpdir/LargeFile.pdf -et
+
+  cat > expected_log <<EOF
+aws --endpoint-url https://webscaledemo.netapp.com s3api head-bucket --bucket bversion
+aws --endpoint-url https://webscaledemo.netapp.com s3api create-multipart-upload --bucket bversion --key LargeFile.pdf
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 1 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --content-md5 m0mq1u0KEibzWhhDt7ztCcQo= --body $tmpdir/LargeFile.pdf.aa
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 2 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --content-md5 m0mq1u0KEibzWhhDt7ztCcQo= --body $tmpdir/LargeFile.pdf.ab
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 3 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --content-md5 m0mq1u0KEibzWhhDt7ztCcQo= --body $tmpdir/LargeFile.pdf.ac
+aws --endpoint-url https://webscaledemo.netapp.com s3api complete-multipart-upload --multipart-upload file://$tmpdir/fpart.json --bucket bversion --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --key LargeFile.pdf
+aws --endpoint-url https://webscaledemo.netapp.com s3api head-object --bucket bversion --key LargeFile.pdf
+EOF
+  pill_log > actual_log
+  assertEquals "unexpected sequence of commands issued" \
+    "" "$(diff -wu expected_log actual_log)"
+}
+
+testNoMD5() {
+  . ../mpup -a='--endpoint-url https://webscaledemo.netapp.com' -b=bversion -s=5m -f=$tmpdir/LargeFile.pdf -et
+
+  cat > expected_log <<EOF
+aws --endpoint-url https://webscaledemo.netapp.com s3api head-bucket --bucket bversion
+aws --endpoint-url https://webscaledemo.netapp.com s3api create-multipart-upload --bucket bversion --key LargeFile.pdf
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 1 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --body $tmpdir/LargeFile.pdf.aa
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 2 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --body $tmpdir/LargeFile.pdf.ab
+aws --endpoint-url https://webscaledemo.netapp.com s3api upload-part --bucket bversion --key LargeFile.pdf --part-number 3 --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --body $tmpdir/LargeFile.pdf.ac
+aws --endpoint-url https://webscaledemo.netapp.com s3api complete-multipart-upload --multipart-upload file://$tmpdir/fpart.json --bucket bversion --upload-id 1uci7TJJ9Xvgfmx02QxNcztiT9o6-jzG0Ek1kVDnp5hPtFiJh1SXpxIvkA --key LargeFile.pdf
+aws --endpoint-url https://webscaledemo.netapp.com s3api head-object --bucket bversion --key LargeFile.pdf
+EOF
+  pill_log > actual_log
+  assertEquals "unexpected sequence of commands issued" \
+    "" "$(diff -wu expected_log actual_log)"
+}
+
+. ./shunit2

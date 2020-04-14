@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+. ./placebo
+pill_attach command=aws data_path=mock
+pill_record
+. ../multipartup -a='--endpoint-url https://webscaledemo.netapp.com' -b=backup -s=3m -f=FreeBSD_Mastery-ZFS.pdf
+pill_log
+pill_detach
